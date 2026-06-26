@@ -1,0 +1,530 @@
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Syntax Tree Visualizer</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/acorn/8.11.3/acorn.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #ffffff;
+    --paper: #fafbfc;
+    --line: #e7ebf0;
+    --line-2: #d4dae2;
+    --ink: #1c2430;
+    --dim: #6b7787;
+    --faint: #aab4c0;
+    --accent: #4f46e5;
+    --accent-soft: #eef0fe;
+    --leaf: #c2700a;
+    --leaf-soft: #fdf3e6;
+    --kw: #1d4ed8;
+    --kw-soft: #eaf1ff;
+    --err: #dc2626;
+    --wire: #c2cad4;
+    --mono: 'SF Mono','JetBrains Mono','Fira Code',ui-monospace,monospace;
+    --sans: -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+  }
+
+  html, body { height: 100%; background: var(--bg); color: var(--ink);
+    font-family: var(--sans); overflow: hidden; }
+
+  .wrap {
+    display: grid;
+    grid-template-columns: 1fr 1.4fr;
+    grid-template-rows: auto 1fr;
+    height: 100vh;
+    background: var(--line);
+    gap: 1px;
+  }
+
+  header {
+    grid-column: 1 / 3; background: var(--bg); padding: 12px 20px;
+    display: flex; align-items: center; gap: 14px;
+  }
+  header h1 { font-size: 13px; font-weight: 600; letter-spacing: 0.2px; }
+  header .sub { font-size: 12px; color: var(--dim); }
+  header .right { margin-left: auto; display: flex; gap: 14px; font-size: 12px; color: var(--dim); }
+  header .right b { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+  /* LEFT */
+  .editor-pane { background: var(--bg); display: flex; flex-direction: column; min-height: 0; }
+  .bar {
+    font-size: 12px; color: var(--dim); padding: 9px 16px; border-bottom: 1px solid var(--line);
+    display: flex; justify-content: space-between; align-items: center; flex-shrink: 0;
+  }
+  #status.ok { color: var(--accent); } #status.err { color: var(--err); } #status.busy { color: var(--leaf); }
+
+  .editor-body { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+  textarea {
+    flex: 1; background: transparent; border: none; outline: none; resize: none;
+    color: var(--ink); font-family: var(--mono); font-size: 13px; line-height: 1.7;
+    padding: 16px; tab-size: 2; min-height: 0;
+  }
+  textarea:disabled { color: var(--ink); opacity: 1; cursor: default; }
+  textarea::selection { background: var(--accent-soft); }
+  textarea::placeholder { color: var(--faint); }
+
+  .tokens { border-top: 1px solid var(--line); padding: 10px 14px; flex-shrink: 0;
+    max-height: 130px; overflow-y: auto; background: var(--paper); }
+  .tokens .tk-head { font-size: 11px; color: var(--dim); margin-bottom: 8px; }
+  .tok { display: inline-flex; flex-direction: column; margin: 0 5px 6px 0; padding: 3px 7px;
+    border: 1px solid var(--line-2); border-radius: 4px; background: var(--bg); vertical-align: top; }
+  .tok .t-val { font-family: var(--mono); font-size: 11px; color: var(--ink); }
+  .tok .t-type { font-size: 9px; color: var(--faint); margin-top: 1px; }
+  .tok.kw { border-color: var(--kw); background: var(--kw-soft); } .tok.kw .t-val { color: var(--kw); }
+  .tok.num,.tok.str { border-color: var(--leaf); background: var(--leaf-soft); }
+  .tok.num .t-val,.tok.str .t-val { color: var(--leaf); }
+
+  /* RIGHT */
+  .tree-pane { background: var(--paper); display: flex; flex-direction: column; min-height: 0; position: relative; }
+  .tree-scroll { flex: 1; overflow: hidden; position: relative; cursor: grab; }
+  .tree-scroll.dragging { cursor: grabbing; }
+  svg { display: block; }
+  #viewport { transform-origin: 0 0; }
+
+  .zoom-ctl { position: absolute; bottom: 14px; right: 14px; display: flex; flex-direction: column;
+    gap: 1px; background: var(--line-2); border: 1px solid var(--line-2); border-radius: 7px;
+    overflow: hidden; box-shadow: 0 2px 8px rgba(20,30,50,0.06); }
+  .zoom-ctl button { width: 32px; height: 30px; border: none; background: var(--bg); color: var(--ink);
+    font-size: 15px; cursor: pointer; display: flex; align-items: center; justify-content: center;
+    font-family: var(--sans); }
+  .zoom-ctl button:hover { background: var(--accent-soft); color: var(--accent); }
+  .zoom-ctl button.fit { font-size: 10px; font-weight: 600; letter-spacing: 0.3px; }
+
+  .node-card { cursor: default; }
+  .node-box { fill: var(--bg); stroke: var(--line-2); stroke-width: 1; }
+  .node-box.leaf { stroke: var(--leaf); } .node-box.decl { stroke: var(--kw); }
+  .node-type { fill: var(--ink); font-size: 11px; font-weight: 600; font-family: var(--mono); }
+  .node-type.leaf { fill: var(--leaf); } .node-type.decl { fill: var(--kw); }
+  .node-val { fill: var(--dim); font-size: 10px; font-family: var(--mono); }
+  .wire { stroke: var(--wire); stroke-width: 1.25; fill: none; }
+
+  /* simple error toast */
+  .toast { position: absolute; bottom: 16px; left: 16px; background: var(--bg);
+    border: 1px solid var(--err); color: var(--err); font-size: 12px; padding: 9px 14px;
+    border-radius: 7px; box-shadow: 0 2px 10px rgba(220,38,38,0.10);
+    opacity: 0; transform: translateY(6px); transition: opacity .2s, transform .2s; pointer-events: none; }
+  .toast.show { opacity: 1; transform: translateY(0); }
+
+  /* ---------- guided tour ---------- */
+  .tour-dim { position: fixed; inset: 0; background: rgba(18,26,38,0.30); z-index: 40;
+    opacity: 0; transition: opacity .35s; pointer-events: none; }
+  .tour-dim.show { opacity: 1; pointer-events: auto; }
+
+  .spotlight { position: fixed; z-index: 41; border-radius: 10px; pointer-events: none;
+    box-shadow: 0 0 0 9999px rgba(18,26,38,0.30); border: 2px solid var(--accent);
+    opacity: 0; transition: opacity .35s, top .5s ease, left .5s ease, width .5s ease, height .5s ease; }
+  .spotlight.show { opacity: 1; }
+
+  .tour-card { position: fixed; z-index: 42; background: var(--bg); border: 1px solid var(--line-2);
+    border-radius: 12px; padding: 20px 22px; width: 320px; box-shadow: 0 12px 40px rgba(20,30,50,0.18);
+    opacity: 0; transform: translateY(8px) scale(0.98); transition: opacity .3s, transform .3s; }
+  .tour-card.show { opacity: 1; transform: translateY(0) scale(1); }
+  .tour-card h3 { font-size: 15px; font-weight: 650; margin-bottom: 8px; }
+  .tour-card p { font-size: 13px; line-height: 1.6; color: var(--dim); }
+  .tour-card .nav { display: flex; align-items: center; justify-content: space-between; margin-top: 18px; }
+  .tour-card .dots { display: flex; gap: 6px; }
+  .tour-card .dots i { width: 6px; height: 6px; border-radius: 50%; background: var(--line-2); display: block; }
+  .tour-card .dots i.on { background: var(--accent); }
+  .tour-card .skip { background: none; border: none; color: var(--faint); font-size: 12px; cursor: pointer; font-family: var(--sans); }
+  .tour-card .skip:hover { color: var(--dim); }
+  .tour-card .next { background: var(--accent); color: #fff; border: none; padding: 8px 18px;
+    border-radius: 7px; font-size: 13px; font-weight: 600; cursor: pointer; font-family: var(--sans); }
+  .tour-card .next:hover { background: #4338ca; }
+
+  .legend { display: flex; gap: 16px; padding: 8px 16px; border-top: 1px solid var(--line);
+    font-size: 11px; color: var(--dim); flex-shrink: 0; }
+  .legend span { display: flex; align-items: center; gap: 6px; }
+  .legend i { width: 9px; height: 9px; border-radius: 2px; border: 1px solid; display: inline-block; }
+  .legend .b { border-color: var(--line-2); } .legend .d { border-color: var(--kw); } .legend .l { border-color: var(--leaf); }
+
+  @media (max-width: 820px) {
+    .wrap { grid-template-columns: 1fr; grid-template-rows: auto 42vh 1fr; }
+    header { grid-column: 1; }
+  }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>Syntax Tree Visualizer</h1>
+    <span class="sub">JavaScript → tokens → syntax tree</span>
+    <div class="right">
+      <span>tokens <b id="tokCount">0</b></span>
+      <span>nodes <b id="nodeCount">0</b></span>
+    </div>
+  </header>
+
+  <div class="editor-pane">
+    <div class="bar"><span>source.js</span><span id="status" class="ok">ready</span></div>
+    <div class="editor-body">
+      <textarea id="code" spellcheck="false" placeholder="type JavaScript here..."></textarea>
+      <div class="tokens" id="tokensBox">
+        <div class="tk-head">tokens</div>
+        <div id="tokStrip"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="tree-pane">
+    <div class="bar"><span>syntax tree</span><span>drag to pan · scroll to zoom</span></div>
+    <div class="tree-scroll" id="scroll">
+      <svg id="tree"><g id="viewport"></g></svg>
+    </div>
+    <div class="zoom-ctl">
+      <button id="zin" title="Zoom in">+</button>
+      <button id="zout" title="Zoom out">−</button>
+      <button id="zfit" class="fit" title="Fit to screen">FIT</button>
+    </div>
+    <div class="toast" id="toast">Code might have errors, can't be parsed</div>
+    <div class="legend">
+      <span><i class="b"></i> node</span>
+      <span><i class="d"></i> declaration</span>
+      <span><i class="l"></i> literal</span>
+    </div>
+  </div>
+</div>
+
+<!-- tour layer -->
+<div class="tour-dim" id="tourDim"></div>
+<div class="spotlight" id="spotlight"></div>
+<div class="tour-card" id="tourCard">
+  <h3 id="tcTitle"></h3>
+  <p id="tcBody"></p>
+  <div class="nav">
+    <button class="skip" id="tcSkip">Skip</button>
+    <div class="dots" id="tcDots"></div>
+    <button class="next" id="tcNext">Next</button>
+  </div>
+</div>
+
+<script>
+const codeEl = document.getElementById('code');
+const svg = document.getElementById('tree');
+const viewport = document.getElementById('viewport');
+const scroll = document.getElementById('scroll');
+const statusEl = document.getElementById('status');
+const toast = document.getElementById('toast');
+const tokStrip = document.getElementById('tokStrip');
+const tokCountEl = document.getElementById('tokCount');
+const nodeCountEl = document.getElementById('nodeCount');
+
+const CHILD_KEYS = ['body','declarations','init','id','params','left','right',
+  'test','consequent','alternate','argument','callee','arguments','expression',
+  'object','property','elements','properties','key','value'];
+const LEAF_TYPES = new Set(['Literal','Identifier']);
+const DECL_TYPES = new Set(['VariableDeclaration','FunctionDeclaration',
+  'VariableDeclarator','ArrowFunctionExpression','FunctionExpression']);
+
+function toTree(node) {
+  if (!node || typeof node !== 'object' || !node.type) return null;
+  const t = node.type;
+  let label = '';
+  if (t === 'Literal') label = JSON.stringify(node.value);
+  else if (t === 'Identifier') label = node.name;
+  else if (t === 'BinaryExpression' || t === 'LogicalExpression') label = node.operator;
+  const children = [];
+  for (const key of CHILD_KEYS) {
+    if (!(key in node)) continue;
+    const v = node[key];
+    if (Array.isArray(v)) v.forEach(c => { const ch = toTree(c); if (ch) children.push(ch); });
+    else if (v && typeof v === 'object' && v.type) { const ch = toTree(v); if (ch) children.push(ch); }
+  }
+  return { type: t, label, children };
+}
+
+const NODE_W = 138, NODE_H = 42, H_GAP = 20, V_GAP = 58;
+let treeBBox = { w: 100, h: 100, minX: 0 };
+
+function layout(root) {
+  let count = 0, leafX = 0;
+  function place(n, depth) {
+    count++;
+    n.y = depth * (NODE_H + V_GAP) + 20;
+    if (!n.children.length) { n.x = leafX; leafX += NODE_W + H_GAP; }
+    else { n.children.forEach(c => place(c, depth + 1));
+      n.x = (n.children[0].x + n.children[n.children.length - 1].x) / 2; }
+  }
+  place(root, 0);
+  return count;
+}
+
+let animToken = 0;
+function render(root) {
+  const my = ++animToken;
+  const count = layout(root);
+  nodeCountEl.textContent = count;
+
+  let minX = Infinity, maxX = -Infinity, maxY = -Infinity;
+  (function scan(n){ minX=Math.min(minX,n.x); maxX=Math.max(maxX,n.x+NODE_W);
+    maxY=Math.max(maxY,n.y+NODE_H); n.children.forEach(scan); })(root);
+  treeBBox = { w: maxX - minX, h: maxY, minX };
+
+  viewport.innerHTML = '';
+  const wires = document.createElementNS('http://www.w3.org/2000/svg','g');
+  const nodes = document.createElementNS('http://www.w3.org/2000/svg','g');
+  viewport.appendChild(wires); viewport.appendChild(nodes);
+
+  const ordered = [];
+  (function bfs(){ let q=[root]; while(q.length){ const n=q.shift(); ordered.push(n);
+    n.children.forEach(c=>q.push(c)); } })();
+
+  ordered.forEach((n, i) => setTimeout(() => {
+    if (my !== animToken) return;
+    drawWires(wires, n); drawNode(nodes, n);
+  }, i * 38));
+
+  setTimeout(() => { if (my === animToken) fitToScreen(); }, ordered.length * 38 + 60);
+}
+
+function drawWires(g, n) {
+  n.children.forEach(c => {
+    const x1 = n.x + NODE_W/2, y1 = n.y + NODE_H, x2 = c.x + NODE_W/2, y2 = c.y, midY = (y1+y2)/2;
+    const p = document.createElementNS('http://www.w3.org/2000/svg','path');
+    p.setAttribute('d', `M${x1},${y1} C${x1},${midY} ${x2},${midY} ${x2},${y2}`);
+    p.setAttribute('class','wire'); p.style.opacity = 0; g.appendChild(p);
+    requestAnimationFrame(()=>{ p.style.transition='opacity .3s'; p.style.opacity=1; });
+  });
+}
+
+function drawNode(g, n) {
+  const cls = LEAF_TYPES.has(n.type) ? 'leaf' : DECL_TYPES.has(n.type) ? 'decl' : '';
+  const grp = document.createElementNS('http://www.w3.org/2000/svg','g');
+  grp.setAttribute('class','node-card');
+  grp.setAttribute('transform', `translate(${n.x},${n.y}) scale(0.9)`);
+  grp.style.opacity = 0;
+
+  const rect = document.createElementNS('http://www.w3.org/2000/svg','rect');
+  rect.setAttribute('width', NODE_W); rect.setAttribute('height', NODE_H);
+  rect.setAttribute('rx', 5); rect.setAttribute('class', 'node-box ' + cls);
+  grp.appendChild(rect);
+
+  const t = document.createElementNS('http://www.w3.org/2000/svg','text');
+  t.setAttribute('x', NODE_W/2); t.setAttribute('y', n.label ? 18 : 25);
+  t.setAttribute('text-anchor','middle'); t.setAttribute('class','node-type ' + cls);
+  t.textContent = n.type; grp.appendChild(t);
+
+  if (n.label) {
+    const v = document.createElementNS('http://www.w3.org/2000/svg','text');
+    v.setAttribute('x', NODE_W/2); v.setAttribute('y', 32);
+    v.setAttribute('text-anchor','middle'); v.setAttribute('class','node-val');
+    v.textContent = n.label.length > 17 ? n.label.slice(0,16)+'…' : n.label;
+    grp.appendChild(v);
+  }
+  g.appendChild(grp);
+  requestAnimationFrame(()=>{
+    grp.style.transition = 'opacity .3s ease, transform .3s ease';
+    grp.style.opacity = 1;
+    grp.setAttribute('transform', `translate(${n.x},${n.y}) scale(1)`);
+  });
+}
+
+// ---------- pan & zoom ----------
+let scale = 1, tx = 0, ty = 0;
+function applyTransform() { viewport.setAttribute('transform', `translate(${tx},${ty}) scale(${scale})`); }
+function fitToScreen() {
+  const rect = scroll.getBoundingClientRect();
+  svg.setAttribute('width', rect.width); svg.setAttribute('height', rect.height);
+  const pad = 40;
+  const sx = (rect.width - pad*2) / treeBBox.w;
+  const sy = (rect.height - pad*2) / treeBBox.h;
+  scale = Math.min(sx, sy, 1.1);
+  if (!isFinite(scale) || scale <= 0) scale = 1;
+  tx = (rect.width - treeBBox.w * scale) / 2 - treeBBox.minX * scale;
+  ty = pad;
+  applyTransform();
+}
+function zoomBy(factor, cx, cy) {
+  const rect = scroll.getBoundingClientRect();
+  const px = (cx ?? rect.width/2), py = (cy ?? rect.height/2);
+  const wx = (px - tx) / scale, wy = (py - ty) / scale;
+  scale = Math.max(0.15, Math.min(3, scale * factor));
+  tx = px - wx * scale; ty = py - wy * scale;
+  applyTransform();
+}
+document.getElementById('zin').onclick = () => zoomBy(1.25);
+document.getElementById('zout').onclick = () => zoomBy(0.8);
+document.getElementById('zfit').onclick = fitToScreen;
+
+scroll.addEventListener('wheel', e => {
+  e.preventDefault();
+  const rect = scroll.getBoundingClientRect();
+  zoomBy(e.deltaY < 0 ? 1.12 : 0.89, e.clientX - rect.left, e.clientY - rect.top);
+}, { passive: false });
+
+let dragging = false, sx0 = 0, sy0 = 0, tx0 = 0, ty0 = 0;
+scroll.addEventListener('mousedown', e => {
+  if (tourActive) return;
+  dragging = true; scroll.classList.add('dragging');
+  sx0 = e.clientX; sy0 = e.clientY; tx0 = tx; ty0 = ty;
+});
+window.addEventListener('mousemove', e => {
+  if (!dragging) return;
+  tx = tx0 + (e.clientX - sx0); ty = ty0 + (e.clientY - sy0); applyTransform();
+});
+window.addEventListener('mouseup', () => { dragging = false; scroll.classList.remove('dragging'); });
+window.addEventListener('resize', () => { const r = scroll.getBoundingClientRect();
+  svg.setAttribute('width', r.width); svg.setAttribute('height', r.height); });
+
+// ---------- tokens ----------
+function tokClass(type){ if(type.keyword) return 'kw'; const l=type.label;
+  return l==='num'?'num':l==='string'?'str':''; }
+function tokDisplayType(type){ const l=type.label;
+  if(type.keyword) return 'keyword'; if(l==='name') return 'identifier';
+  if(l==='num') return 'number'; if(l==='string') return 'string';
+  return /^[A-Za-z]+$/.test(l) ? l : 'punct'; }
+function renderTokens(src){
+  tokStrip.innerHTML=''; let n=0;
+  try { for(const tok of acorn.tokenizer(src,{ecmaVersion:2020})){
+    if(tok.type.label==='eof') break; n++;
+    const el=document.createElement('span'); el.className='tok '+tokClass(tok.type);
+    let val=tok.value; if(val==null||val==='') val=tok.type.label;
+    if(tok.type.label==='string') val='"'+val+'"';
+    el.innerHTML=`<span class="t-val">${esc(String(val))}</span><span class="t-type">${tokDisplayType(tok.type)}</span>`;
+    tokStrip.appendChild(el);
+  }} catch(e){}
+  tokCountEl.textContent=n;
+}
+function esc(s){ return s.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+let toastTimer;
+function showToast(){ toast.classList.add('show'); clearTimeout(toastTimer);
+  toastTimer=setTimeout(()=>toast.classList.remove('show'), 2600); }
+
+function parse() {
+  const src = codeEl.value;
+  renderTokens(src);
+  if (!src.trim()) { viewport.innerHTML=''; nodeCountEl.textContent=0;
+    statusEl.textContent='ready'; statusEl.className='ok'; toast.classList.remove('show'); return; }
+  try {
+    const ast = acorn.parse(src, { ecmaVersion: 2020 });
+    statusEl.textContent='parsed'; statusEl.className='ok';
+    toast.classList.remove('show');
+    render(toTree(ast));
+  } catch (e) {
+    statusEl.textContent='error'; statusEl.className='err';
+    showToast();
+  }
+}
+
+let timer;
+codeEl.addEventListener('input', () => {
+  clearTimeout(timer); statusEl.textContent='parsing'; statusEl.className='busy';
+  timer = setTimeout(parse, 350);
+});
+
+// ================= GUIDED TOUR =================
+const tourDim = document.getElementById('tourDim');
+const spotlight = document.getElementById('spotlight');
+const tourCard = document.getElementById('tourCard');
+const tcTitle = document.getElementById('tcTitle');
+const tcBody = document.getElementById('tcBody');
+const tcDots = document.getElementById('tcDots');
+const tcNext = document.getElementById('tcNext');
+const tcSkip = document.getElementById('tcSkip');
+
+let tourActive = false;
+const DEMO_CODE = `const x = 5 + 3;`;
+
+const steps = [
+  { title: "Welcome", body: "This tool turns JavaScript into its syntax tree — the structure a computer builds before it can run your code. Quick tour:", target: null, action: null },
+  { title: "1. Write code here", body: "You type JavaScript on the left. Let's drop in a small example.", target: 'editor', action: 'type' },
+  { title: "2. The syntax tree", body: "Each piece of your code becomes a node. Notice how 5 + 3 splits into a branch with two leaves — that nesting is how a computer understands structure and order.", target: 'treepane', action: 'fit' },
+  { title: "3. Tokens", body: "Before the tree, your text is split into tokens — the smallest pieces, like words in a sentence. That step shows here.", target: 'tokens', action: null },
+  { title: "You're all set", body: "Happy tinkering. Type anything and the tree rebuilds live. Drag to pan, scroll to zoom, or press FIT.", target: null, action: 'clear' },
+];
+
+let stepIdx = 0;
+tcDots.innerHTML = steps.map(()=>'<i></i>').join('');
+
+function targetEl(t) {
+  if (t === 'editor') return document.querySelector('.editor-pane');
+  if (t === 'treepane') return document.querySelector('.tree-pane');
+  if (t === 'tokens') return document.getElementById('tokensBox');
+  return null;
+}
+function positionCard(target) {
+  let cx = window.innerWidth/2 - 160, cy = window.innerHeight/2 - 90;
+  if (target) {
+    const el = targetEl(target).getBoundingClientRect();
+    if (target === 'editor') { cx = el.right + 24; cy = el.top + 40; }
+    else if (target === 'treepane') { cx = el.left + 24; cy = el.bottom - 230; }
+    else if (target === 'tokens') { cx = el.right + 24; cy = el.top - 30; }
+    cx = Math.max(16, Math.min(cx, window.innerWidth - 352));
+    cy = Math.max(16, Math.min(cy, window.innerHeight - 230));
+  }
+  tourCard.style.left = cx + 'px';
+  tourCard.style.top = cy + 'px';
+}
+function moveSpotlight(target) {
+  if (!target) { spotlight.classList.remove('show'); return; }
+  const el = targetEl(target).getBoundingClientRect();
+  const pad = 6;
+  spotlight.style.left = (el.left - pad) + 'px';
+  spotlight.style.top = (el.top - pad) + 'px';
+  spotlight.style.width = (el.width + pad*2) + 'px';
+  spotlight.style.height = (el.height + pad*2) + 'px';
+  spotlight.classList.add('show');
+}
+
+function typeDemo(done) {
+  codeEl.value = ''; renderTokens('');
+  let i = 0;
+  const iv = setInterval(() => {
+    codeEl.value = DEMO_CODE.slice(0, ++i);
+    renderTokens(codeEl.value);
+    if (i >= DEMO_CODE.length) {
+      clearInterval(iv);
+      try { const ast = acorn.parse(codeEl.value, {ecmaVersion:2020});
+        statusEl.textContent='parsed'; statusEl.className='ok'; render(toTree(ast)); } catch(e){}
+      setTimeout(done, 600);
+    }
+  }, 75);
+}
+
+function showStep(i) {
+  const s = steps[i];
+  [...tcDots.children].forEach((d,di)=>d.classList.toggle('on', di===i));
+  tcNext.textContent = (i === steps.length - 1) ? 'Done' : 'Next';
+  tourCard.classList.remove('show');
+
+  const reveal = () => {
+    tcTitle.textContent = s.title;
+    tcBody.textContent = s.body;
+    moveSpotlight(s.target);
+    positionCard(s.target);
+    requestAnimationFrame(()=> tourCard.classList.add('show'));
+  };
+
+  if (s.action === 'type') { reveal(); setTimeout(()=> typeDemo(()=>{}), 400); }
+  else if (s.action === 'fit') { reveal(); setTimeout(fitToScreen, 200); }
+  else if (s.action === 'clear') {
+    codeEl.value = ''; renderTokens(''); viewport.innerHTML=''; nodeCountEl.textContent=0;
+    statusEl.textContent='ready'; statusEl.className='ok'; reveal();
+  }
+  else { reveal(); }
+}
+
+function startTour() {
+  tourActive = true; codeEl.disabled = true;
+  tourDim.classList.add('show'); stepIdx = 0;
+  setTimeout(()=>showStep(0), 300);
+}
+function endTour() {
+  tourActive = false; codeEl.disabled = false;
+  tourDim.classList.remove('show'); spotlight.classList.remove('show'); tourCard.classList.remove('show');
+  codeEl.value = ''; renderTokens(''); viewport.innerHTML=''; nodeCountEl.textContent=0;
+  statusEl.textContent='ready'; statusEl.className='ok';
+  codeEl.focus();
+}
+
+tcNext.onclick = () => { if (stepIdx >= steps.length - 1) { endTour(); return; } stepIdx++; showStep(stepIdx); };
+tcSkip.onclick = endTour;
+window.addEventListener('keydown', e => { if (e.key === 'Escape' && tourActive) endTour(); });
+
+// boot
+window.addEventListener('load', () => {
+  const r = scroll.getBoundingClientRect();
+  svg.setAttribute('width', r.width); svg.setAttribute('height', r.height);
+  startTour();
+});
+</script>
